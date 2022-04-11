@@ -79,12 +79,12 @@ static const opus_int16 eband5ms[] = {
 typedef struct {
   int init;
   kiss_fft_state *kfft;
-  float half_window[FRAME_SIZE];
+  float half_window[FRAME_SIZE];    //存了窗函数一半的系数值，窗大小480，（窗函数对称）
   float dct_table[NB_BANDS*NB_BANDS];
 } CommonState;
 
 struct DenoiseState {
-  float analysis_mem[FRAME_SIZE];
+  float analysis_mem[FRAME_SIZE]; //过去的480个点缓存,都是之前的旧输入
   float cepstral_mem[CEPS_MEM][NB_BANDS];
   int memid;
   float synthesis_mem[FRAME_SIZE];
@@ -97,6 +97,11 @@ struct DenoiseState {
   RNNState rnn;
 };
 
+/*
+ * 计算每个band的能量
+ * kiss_fft_cpx就是一个复数的结构体，包含r和i，数据类型是float，这里的参数实际上就是一个复数数组
+ * bandE是储存每个band的能量的，有22个值
+ */
 void compute_band_energy(float *bandE, const kiss_fft_cpx *X) {
   int i;
   float sum[NB_BANDS] = {0};
@@ -104,17 +109,20 @@ void compute_band_energy(float *bandE, const kiss_fft_cpx *X) {
   {
     int j;
     int band_size;
+    //band的点数为eband5ms每两个值之间的差乘以4
     band_size = (eband5ms[i+1]-eband5ms[i])<<FRAME_SIZE_SHIFT;
-    for (j=0;j<band_size;j++) {
+    for (j=0;j<band_size;j++) {// 每个band内部的计算
       float tmp;
+      // frac实际上就是论文中的wb，将frac作用于X实际上就是将opusband作用于频谱
       float frac = (float)j/band_size;
       tmp = SQUARE(X[(eband5ms[i]<<FRAME_SIZE_SHIFT) + j].r);
       tmp += SQUARE(X[(eband5ms[i]<<FRAME_SIZE_SHIFT) + j].i);
+      // 每两个三角窗都有一半区域是重叠的，因而对于某一段频点，其既被算入该频带，也被算入下一频带
       sum[i] += (1-frac)*tmp;
       sum[i+1] += frac*tmp;
     }
   }
-  sum[0] *= 2;
+  sum[0] *= 2;// 第一个band和最后一个band的窗只有一半因而能量乘以2
   sum[NB_BANDS-1] *= 2;
   for (i=0;i<NB_BANDS;i++)
   {
@@ -122,6 +130,9 @@ void compute_band_energy(float *bandE, const kiss_fft_cpx *X) {
   }
 }
 
+/*
+ * 计算band之间的相关度
+ */
 void compute_band_corr(float *bandE, const kiss_fft_cpx *X, const kiss_fft_cpx *P) {
   int i;
   float sum[NB_BANDS] = {0};
@@ -132,7 +143,7 @@ void compute_band_corr(float *bandE, const kiss_fft_cpx *X, const kiss_fft_cpx *
     band_size = (eband5ms[i+1]-eband5ms[i])<<FRAME_SIZE_SHIFT;
     for (j=0;j<band_size;j++) {
       float tmp;
-      float frac = (float)j/band_size;
+      float frac = (float)j/band_size;// 论文中的wb系数，求解wb,实际上就是三角波系数
       tmp = X[(eband5ms[i]<<FRAME_SIZE_SHIFT) + j].r * P[(eband5ms[i]<<FRAME_SIZE_SHIFT) + j].r;
       tmp += X[(eband5ms[i]<<FRAME_SIZE_SHIFT) + j].i * P[(eband5ms[i]<<FRAME_SIZE_SHIFT) + j].i;
       sum[i] += (1-frac)*tmp;
@@ -209,6 +220,7 @@ static void idct(float *out, const float *in) {
 }
 #endif
 
+//对输入数据进行快速傅里叶变换，并将结果储存在out中，注意out的长度为481
 static void forward_transform(kiss_fft_cpx *out, const float *in) {
   int i;
   kiss_fft_cpx x[WINDOW_SIZE];
@@ -223,7 +235,7 @@ static void forward_transform(kiss_fft_cpx *out, const float *in) {
     out[i] = y[i];
   }
 }
-
+// 对输入信号in做ifft
 static void inverse_transform(float *out, const kiss_fft_cpx *in) {
   int i;
   kiss_fft_cpx x[WINDOW_SIZE];
@@ -244,6 +256,7 @@ static void inverse_transform(float *out, const kiss_fft_cpx *in) {
   }
 }
 
+//给输入数据x进行加窗
 static void apply_window(float *x) {
   int i;
   check_init();
@@ -253,6 +266,7 @@ static void apply_window(float *x) {
   }
 }
 
+// 获取denoise的大小（字节数）
 int rnnoise_get_size() {
   return sizeof(DenoiseState);
 }
@@ -292,13 +306,15 @@ int lowpass = FREQ_SIZE;
 int band_lp = NB_BANDS;
 #endif
 
+// 帧分析 ：in是长度为480的输入数据，对x做傅里叶变换得到X并求出X的频带能量Ex
 static void frame_analysis(DenoiseState *st, kiss_fft_cpx *X, float *Ex, const float *in) {
   int i;
   float x[WINDOW_SIZE];
-  RNN_COPY(x, st->analysis_mem, FRAME_SIZE);
-  for (i=0;i<FRAME_SIZE;i++) x[FRAME_SIZE + i] = in[i];
-  RNN_COPY(st->analysis_mem, in, FRAME_SIZE);
-  apply_window(x);
+  // 从 analysis_mem拷贝FRAME_SIZE个数据赋给x的前半段，analysis_mem是上一次的输入
+  RNN_COPY(x, st->analysis_mem, FRAME_SIZE); //旧输入放入x的前半段
+  for (i=0;i<FRAME_SIZE;i++) x[FRAME_SIZE + i] = in[i];//新输入放入x的后半段
+  RNN_COPY(st->analysis_mem, in, FRAME_SIZE);//再将新数据拷贝到analysis_mem
+  apply_window(x);  //初始化FFT相关、汉明窗系数、22*22 band 的DCT系数矩阵
   forward_transform(X, x);
 #if TRAINING
   for (i=lowpass;i<FREQ_SIZE;i++)
@@ -307,6 +323,9 @@ static void frame_analysis(DenoiseState *st, kiss_fft_cpx *X, float *Ex, const f
   compute_band_energy(Ex, X);
 }
 
+/*
+ * 计算42维特征
+ */
 static int compute_frame_features(DenoiseState *st, kiss_fft_cpx *X, kiss_fft_cpx *P,
                                   float *Ex, float *Ep, float *Exp, float *features, const float *in) {
   int i;
@@ -316,36 +335,46 @@ static int compute_frame_features(DenoiseState *st, kiss_fft_cpx *X, kiss_fft_cp
   float Ly[NB_BANDS];
   float p[WINDOW_SIZE];
   float pitch_buf[PITCH_BUF_SIZE>>1];
-  int pitch_index;
+  int pitch_index;// 这里设置的是整型，但下面的参数是其地址，则可改变原来的值
   float gain;
   float *(pre[1]);
   float tmp[NB_BANDS];
   float follow, logMax;
-  frame_analysis(st, X, Ex, in);
+  frame_analysis(st, X, Ex, in);//X：fft 结果，Ex：按band的能量结果
+  // 也是从源src拷贝给dst n个字节数，不同的是，若src和dst内存有重叠，也能顺利拷贝
+  // pitch_buffer长度是1728，这里的意思是将其后面(1728 - 480)个数据放到最前面
   RNN_MOVE(st->pitch_buf, &st->pitch_buf[FRAME_SIZE], PITCH_BUF_SIZE-FRAME_SIZE);
+  // 对其后面的480个数据进行更新
   RNN_COPY(&st->pitch_buf[PITCH_BUF_SIZE-FRAME_SIZE], in, FRAME_SIZE);
   pre[0] = &st->pitch_buf[0];
+  /*
+  * 降采样，对pitch_buf平滑降采样，求自相关，利用自相关求lpc系数，然后进行lpc滤波，即得到lpc残差
+  */
   pitch_downsample(pre, pitch_buf, PITCH_BUF_SIZE, 1);
+  // 寻找基音周期   存入pitch_index
   pitch_search(pitch_buf+(PITCH_MAX_PERIOD>>1), pitch_buf, PITCH_FRAME_SIZE,
                PITCH_MAX_PERIOD-3*PITCH_MIN_PERIOD, &pitch_index);
   pitch_index = PITCH_MAX_PERIOD-pitch_index;
 
+  // 去除高阶谐波影响
   gain = remove_doubling(pitch_buf, PITCH_MAX_PERIOD, PITCH_MIN_PERIOD,
           PITCH_FRAME_SIZE, &pitch_index, st->last_period, st->last_gain);
   st->last_period = pitch_index;
   st->last_gain = gain;
+  // 根据index得到p[i]
   for (i=0;i<WINDOW_SIZE;i++)
     p[i] = st->pitch_buf[PITCH_BUF_SIZE-WINDOW_SIZE-pitch_index+i];
-  apply_window(p);
-  forward_transform(P, p);
-  compute_band_energy(Ep, P);
-  compute_band_corr(Exp, X, P);
-  for (i=0;i<NB_BANDS;i++) Exp[i] = Exp[i]/sqrt(.001+Ex[i]*Ep[i]);
-  dct(tmp, Exp);
-  for (i=0;i<NB_DELTA_CEPS;i++) features[NB_BANDS+2*NB_DELTA_CEPS+i] = tmp[i];
+  apply_window(p);                  // pitch数据应用window
+  forward_transform(P, p);          // 对pitch数据进行傅里叶变换
+  compute_band_energy(Ep, P);       // 计算pitch部分band能量
+  compute_band_corr(Exp, X, P);     // 计算信号频域与pitch频域的相关band能量系数
+  for (i=0;i<NB_BANDS;i++) Exp[i] = Exp[i]/sqrt(.001+Ex[i]*Ep[i]);  // Exp进行标准化
+  dct(tmp, Exp);                    // 然后再做一次dct，实际上就是信号与pitch相关BFCC了
+  for (i=0;i<NB_DELTA_CEPS;i++) features[NB_BANDS+2*NB_DELTA_CEPS+i] = tmp[i];//BFCC特征的dct能量就作为基因相关度
   features[NB_BANDS+2*NB_DELTA_CEPS] -= 1.3;
   features[NB_BANDS+2*NB_DELTA_CEPS+1] -= 0.9;
   features[NB_BANDS+3*NB_DELTA_CEPS] = .01*(pitch_index-300);
+  //而feature的1-NB_BANDS（22）是由log10(Ex)再做一次DCT后填充的，代码如下
   logMax = -2;
   follow = -2;
   for (i=0;i<NB_BANDS;i++) {
@@ -361,8 +390,13 @@ static int compute_frame_features(DenoiseState *st, kiss_fft_cpx *X, kiss_fft_cp
     return 1;
   }
   dct(features, Ly);
+   /*
+    * cepstral_mem是一个8*22的数组，每一次feature里的值填充到ceps_0,然后这个数组会往下再做一次。
+    * ceps_0是float指针，它指向的是ceptral_mem第一个NB_BANDS数组，然后每次与相邻的band数组相减，做出一个delta差值。
+   */
   features[0] -= 12;
   features[1] -= 4;
+  //总是放入memid中，实际上就是ceps_0中，ceps_0是指最新的一帧t，ceps_1为t-1，ceps_2为t-2
   ceps_0 = st->cepstral_mem[st->memid];
   ceps_1 = (st->memid < 1) ? st->cepstral_mem[CEPS_MEM+st->memid-1] : st->cepstral_mem[st->memid-1];
   ceps_2 = (st->memid < 2) ? st->cepstral_mem[CEPS_MEM+st->memid-2] : st->cepstral_mem[st->memid-2];
@@ -394,10 +428,12 @@ static int compute_frame_features(DenoiseState *st, kiss_fft_cpx *X, kiss_fft_cp
     }
     spec_variability += mindist;
   }
+  //特征谱稳度
   features[NB_BANDS+3*NB_DELTA_CEPS+1] = spec_variability/CEPS_MEM-2.1;
   return TRAINING && E < 0.1;
 }
 
+// 将处理好的频域数据处理得到时域数据
 static void frame_synthesis(DenoiseState *st, float *out, const kiss_fft_cpx *y) {
   float x[WINDOW_SIZE];
   int i;
@@ -407,6 +443,14 @@ static void frame_synthesis(DenoiseState *st, float *out, const kiss_fft_cpx *y)
   RNN_COPY(st->synthesis_mem, &x[FRAME_SIZE], FRAME_SIZE);
 }
 
+/*
+ * biquad滤波，双二阶滤波器
+ * y为输出信号
+ * x为输入信号
+ * a b 为滤波器系数
+ * mem为调节参数，从训练模型中获取
+ * N为信号长度
+ */
 static void biquad(float *y, float mem[2], const float *x, const float *b, const float *a, int N) {
   int i;
   for (i=0;i<N;i++) {
@@ -419,6 +463,9 @@ static void biquad(float *y, float mem[2], const float *x, const float *b, const
   }
 }
 
+/*
+ * 论文中的pitch filter部分，下面的r[i]实际上就是论文中的alpha
+ */
 void pitch_filter(kiss_fft_cpx *X, const kiss_fft_cpx *P, const float *Ex, const float *Ep,
                   const float *Exp, const float *g) {
   int i;
@@ -430,7 +477,7 @@ void pitch_filter(kiss_fft_cpx *X, const kiss_fft_cpx *P, const float *Ex, const
     else r[i] = Exp[i]*(1-g[i])/(.001 + g[i]*(1-Exp[i]));
     r[i] = MIN16(1, MAX16(0, r[i]));
 #else
-    if (Exp[i]>g[i]) r[i] = 1;
+    if (Exp[i]>g[i]) r[i] = 1; //exp[i] 代表了每个频带的滤波器系数alpha_b,g[i]代表的是论文的gain_b;
     else r[i] = SQUARE(Exp[i])*(1-SQUARE(g[i]))/(.001 + SQUARE(g[i])*(1-SQUARE(Exp[i])));
     r[i] = sqrt(MIN16(1, MAX16(0, r[i])));
 #endif
@@ -469,17 +516,23 @@ float rnnoise_process_frame(DenoiseState *st, float *out, const float *in) {
   int silence;
   static const float a_hp[2] = {-1.99599, 0.99600};
   static const float b_hp[2] = {-2, 1};
+  //先进行双二阶滤波
   biquad(x, st->mem_hp_x, in, b_hp, a_hp, FRAME_SIZE);
+  // 求出特征值并计算返回vad（利用能量阈值判断）
   silence = compute_frame_features(st, X, P, Ex, Ep, Exp, features, x);
 
+  //若为非静默，则进行处理
   if (!silence) {
+    //用rnn网络得到增益
     compute_rnn(&st->rnn, g, &vad_prob, features);
+    //pitch滤波
     pitch_filter(X, P, Ex, Ep, Exp, g);
     for (i=0;i<NB_BANDS;i++) {
       float alpha = .6f;
       g[i] = MAX16(g[i], alpha*st->lastg[i]);
       st->lastg[i] = g[i];
     }
+    //对增益进行插值
     interp_band_gain(gf, g);
 #if 1
     for (i=0;i<FREQ_SIZE;i++) {
@@ -489,6 +542,7 @@ float rnnoise_process_frame(DenoiseState *st, float *out, const float *in) {
 #endif
   }
 
+  //合成时域数据
   frame_synthesis(st, out, X);
   return vad_prob;
 }
@@ -519,9 +573,9 @@ int main(int argc, char **argv) {
   float mem_hp_n[2]={0};
   float mem_resp_x[2]={0};
   float mem_resp_n[2]={0};
-  float x[FRAME_SIZE];
-  float n[FRAME_SIZE];
-  float xn[FRAME_SIZE];
+  float x[FRAME_SIZE]; //speech gain之后的语音
+  float n[FRAME_SIZE]; //noise gain 之后的语音
+  float xn[FRAME_SIZE]; //processed speech mixed with processed speech
   int vad_cnt=0;
   int gain_change_count=0;
   float speech_gain = 1, noise_gain = 1;
@@ -545,15 +599,15 @@ int main(int argc, char **argv) {
     fread(tmp, sizeof(short), FRAME_SIZE, f2);
   }
   while (1) {
-    kiss_fft_cpx X[FREQ_SIZE], Y[FREQ_SIZE], N[FREQ_SIZE], P[WINDOW_SIZE];
-    float Ex[NB_BANDS], Ey[NB_BANDS], En[NB_BANDS], Ep[NB_BANDS];
+    kiss_fft_cpx X[FREQ_SIZE], Y[FREQ_SIZE], N[FREQ_SIZE], P[WINDOW_SIZE];//X为x的语音数据fft结果
+    float Ex[NB_BANDS], Ey[NB_BANDS], En[NB_BANDS], Ep[NB_BANDS];//Ex是x的语音数据fft变换后按band计算的能量和
     float Exp[NB_BANDS];
     float Ln[NB_BANDS];
     float features[NB_FEATURES];
     float g[NB_BANDS];
     short tmp[FRAME_SIZE];
     float vad=0;
-    float E=0;
+    float E=0; //E是speech语音能量 value^2
     if (count==maxCount) break;
     if ((count%1000)==0) fprintf(stderr, "%d\r", count);
     if (++gain_change_count > 2821) {
