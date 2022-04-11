@@ -42,18 +42,24 @@
 #include "rnn_data.h"
 
 #define FRAME_SIZE_SHIFT 2
-#define FRAME_SIZE (120<<FRAME_SIZE_SHIFT)
+#define FRAME_SIZE (40<<FRAME_SIZE_SHIFT)
+//#define FRAME_SIZE (120<<FRAME_SIZE_SHIFT)
 #define WINDOW_SIZE (2*FRAME_SIZE)
 #define FREQ_SIZE (FRAME_SIZE + 1)
 
-#define PITCH_MIN_PERIOD 60
-#define PITCH_MAX_PERIOD 768
-#define PITCH_FRAME_SIZE 960
+//#define PITCH_MIN_PERIOD 60
+//#define PITCH_MAX_PERIOD 768
+//#define PITCH_FRAME_SIZE 960
+/*for 16K speech files*/
+#define PITCH_MIN_PERIOD 20
+#define PITCH_MAX_PERIOD 256
+#define PITCH_FRAME_SIZE 320  
 #define PITCH_BUF_SIZE (PITCH_MAX_PERIOD+PITCH_FRAME_SIZE)
 
 #define SQUARE(x) ((x)*(x))
 
-#define NB_BANDS 22
+//#define NB_BANDS 22
+#define NB_BANDS 18
 
 #define CEPS_MEM 8
 #define NB_DELTA_CEPS 6
@@ -531,6 +537,12 @@ float rnnoise_process_frame(DenoiseState *st, float *out, const float *in) {
       float alpha = .6f;
       g[i] = MAX16(g[i], alpha*st->lastg[i]);
       st->lastg[i] = g[i];
+	  //cannon note begin
+      if(g[i]>1.0) {
+          fprintf(stderr, "check gain ================ %f \n", g[i]);
+      }
+	  //cannon note end
+
     }
     //对增益进行插值
     interp_band_gain(gf, g);

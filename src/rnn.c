@@ -155,7 +155,8 @@ void compute_gru(const GRULayer *gru, float *state, const float *input)
       state[i] = h[i];
 }
 
-#define INPUT_SIZE 42
+//#define INPUT_SIZE 42
+#define  INPUT_SIZE 38 /*16k*/
 
 void compute_rnn(RNNState *rnn, float *gains, float *vad, const float *input) {
   int i;
