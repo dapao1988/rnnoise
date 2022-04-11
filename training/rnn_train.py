@@ -2,23 +2,27 @@
 
 from __future__ import print_function
 
-import keras
-from keras.models import Sequential
-from keras.models import Model
-from keras.layers import Input
-from keras.layers import Dense
-from keras.layers import LSTM
-from keras.layers import GRU
-from keras.layers import SimpleRNN
-from keras.layers import Dropout
-from keras.layers import concatenate
-from keras import losses
-from keras import regularizers
-from keras.constraints import min_max_norm
+import tensorflow as tf
+import tensorflow.keras as K
+#from tensorflow import keras as K
+
+#from keras.models import Sequential
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input
+from tensorflow.keras.layers import Dense
+from tensorflow.keras.layers import LSTM
+from tensorflow.keras.layers import GRU
+from tensorflow.keras.layers import SimpleRNN
+from tensorflow.keras.layers import Dropout
+from tensorflow.keras.layers import concatenate
+from tensorflow.keras import losses
+from tensorflow.keras import regularizers
+from tensorflow.keras.constraints import min_max_norm
 import h5py
 
-from keras.constraints import Constraint
-from keras import backend as K
+from tensorflow.keras.constraints import Constraint
+from tensorflow.keras import backend as K
 import numpy as np
 
 #import tensorflow as tf
@@ -62,13 +66,13 @@ constraint = WeightClip(0.499)
 print('Build model...')
 main_input = Input(shape=(None, 42), name='main_input')
 tmp = Dense(24, activation='tanh', name='input_dense', kernel_constraint=constraint, bias_constraint=constraint)(main_input)
-vad_gru = GRU(24, activation='tanh', recurrent_activation='sigmoid', return_sequences=True, name='vad_gru', kernel_regularizer=regularizers.l2(reg), recurrent_regularizer=regularizers.l2(reg), kernel_constraint=constraint, recurrent_constraint=constraint, bias_constraint=constraint)(tmp)
+vad_gru = GRU(24, activation='tanh', recurrent_activation='sigmoid', return_sequences=True, name='vad_gru', kernel_regularizer=regularizers.l2(reg), recurrent_regularizer=regularizers.l2(reg), kernel_constraint=constraint, recurrent_constraint=constraint, bias_constraint=constraint, reset_after=False)(tmp)
 vad_output = Dense(1, activation='sigmoid', name='vad_output', kernel_constraint=constraint, bias_constraint=constraint)(vad_gru)
-noise_input = keras.layers.concatenate([tmp, vad_gru, main_input])
-noise_gru = GRU(48, activation='relu', recurrent_activation='sigmoid', return_sequences=True, name='noise_gru', kernel_regularizer=regularizers.l2(reg), recurrent_regularizer=regularizers.l2(reg), kernel_constraint=constraint, recurrent_constraint=constraint, bias_constraint=constraint)(noise_input)
-denoise_input = keras.layers.concatenate([vad_gru, noise_gru, main_input])
+noise_input = tf.keras.layers.concatenate([tmp, vad_gru, main_input])
+noise_gru = GRU(48, activation='relu', recurrent_activation='sigmoid', return_sequences=True, name='noise_gru', kernel_regularizer=regularizers.l2(reg), recurrent_regularizer=regularizers.l2(reg), kernel_constraint=constraint, recurrent_constraint=constraint, bias_constraint=constraint, reset_after=False)(noise_input)
+denoise_input = tf.keras.layers.concatenate([vad_gru, noise_gru, main_input])
 
-denoise_gru = GRU(96, activation='tanh', recurrent_activation='sigmoid', return_sequences=True, name='denoise_gru', kernel_regularizer=regularizers.l2(reg), recurrent_regularizer=regularizers.l2(reg), kernel_constraint=constraint, recurrent_constraint=constraint, bias_constraint=constraint)(denoise_input)
+denoise_gru = GRU(96, activation='tanh', recurrent_activation='sigmoid', return_sequences=True, name='denoise_gru', kernel_regularizer=regularizers.l2(reg), recurrent_regularizer=regularizers.l2(reg), kernel_constraint=constraint, recurrent_constraint=constraint, bias_constraint=constraint, reset_after=False)(denoise_input)
 
 denoise_output = Dense(22, activation='sigmoid', name='denoise_output', kernel_constraint=constraint, bias_constraint=constraint)(denoise_gru)
 
