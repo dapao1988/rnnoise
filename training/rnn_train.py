@@ -94,7 +94,7 @@ if '__main__' == __name__:
                   optimizer='adam', loss_weights=[10, 0.5])
 
     checkpointer = ModelCheckpoint(os.path.join(save_dir, 'model_weights.{epoch:02d}-{val_loss:.2f}.hdf5'),
-                                               verbose=1, save_weights_only=False, period=3)
+                                               verbose=1, save_weights_only=False, mode='min', save_best_only=True)
 
     batch_size = 128 #32
 
@@ -126,9 +126,31 @@ if '__main__' == __name__:
     print(len(x_train), 'train sequences. x shape =', x_train.shape, 'y shape = ', y_train.shape)
 
     print('Train...')
-    model.fit(x_train, [y_train, vad_train],
+    history = model.fit(x_train, [y_train, vad_train],
               batch_size=batch_size,
-              epochs=120,
+              epochs=30,
               validation_split=0.1,
               callbacks=[checkpointer])
+
+    print(history)
+    print(type(history))
+    print(history.history)
+    print(type(history.history))
+    # model summary for visualize
+    plt.plot(history.history['denoise_output_msse'])
+    plt.plot(history.history['val_denoise_output_msse'])
+    plt.title('denoise model msse')
+    plt.ylabel('denoise msse')
+    plt.xlabel('epoch')
+    plt.legend(['train','test'], loc='upper left')
+    plt.show()
+
+    plt.plot(history.history['loss'])
+    plt.plot(history.history['val_loss'])
+    plt.title('model total loss')
+    plt.ylabel('loss')
+    plt.xlabel('epoch')
+    plt.legend(['train','test'], loc='upper left')
+    plt.show()
+
     model.save("weights.hdf5")
